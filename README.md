@@ -2,7 +2,9 @@
 
 A full-stack healthcare platform with role-based access, AI symptom summaries, medication reminders, email notifications, and Google Calendar integration.
 
-**Stack:** FastAPI · SQLAlchemy · SQLite/PostgreSQL · APScheduler · Anthropic API · SendGrid · Google Calendar API · Plain HTML/JS
+**Stack:** FastAPI · SQLAlchemy · SQLite (local) / PostgreSQL (production, via Neon) · APScheduler · Google Gemini API · SendGrid · Google Calendar API · Plain HTML/JS
+
+**Live demo:** `https://healthcare-appointment-manager-6baq.onrender.com`
 
 ---
 
@@ -26,12 +28,15 @@ cp .env.example .env
 # 5. Seed the admin account (first time only)
 python seed_admin.py
 
-# 6. Start the server
+# 6. (Optional) Seed demo doctors, patients, and sample appointments
+python seed_demo_data.py
+
+# 7. Start the server
 python run.py
 # → Open http://localhost:8000
 ```
 
-**Default admin credentials (change after first login):**
+**Default admin credentials (change immediately, especially in production):**
 - Email: `admin@healthbook.com`
 - Password: `admin123`
 
@@ -43,7 +48,7 @@ Every external integration has a mock mode that activates automatically when the
 
 | Service | Key needed | Mock behaviour |
 |---|---|---|
-| LLM (Claude) | `ANTHROPIC_API_KEY` | Returns a hardcoded-but-functional pre/post-visit summary |
+| LLM (Google Gemini) | `GEMINI_API_KEY` | Returns a hardcoded-but-functional pre/post-visit summary |
 | Email | `SENDGRID_API_KEY` | Prints the email to the server log instead of sending |
 | Google Calendar | `GOOGLE_CLIENT_ID` | Returns fake event IDs; all calendar calls log to console |
 
@@ -54,12 +59,12 @@ This means you can run the full booking flow, symptom submission, post-visit not
 ## Environment Variables (`.env.example`)
 
 ```env
-DATABASE_URL=sqlite:///./app.db          # or postgresql://user:pass@host/db
+DATABASE_URL=sqlite:///./app.db          # or postgresql://user:pass@host/db (Neon, Render, etc.)
 JWT_SECRET=change-me-to-long-random-string
 JWT_EXPIRE_MINUTES=1440
 
-ANTHROPIC_API_KEY=                       # leave blank = mock mode
-LLM_MODEL=claude-sonnet-4-6
+GEMINI_API_KEY=                          # leave blank = mock mode
+LLM_MODEL=gemini-flash-latest
 
 SENDGRID_API_KEY=                        # leave blank = mock mode
 EMAIL_FROM=no-reply@example.com
@@ -70,6 +75,8 @@ GOOGLE_REDIRECT_URI=http://localhost:8000/calendar/oauth2callback
 
 APP_BASE_URL=http://localhost:8000
 ```
+
+**Never commit `.env` or paste real key values anywhere public — only `.env.example` (with blank values) belongs in version control.**
 
 ---
 
@@ -177,11 +184,11 @@ All endpoints return JSON. Protected routes require `Authorization: Bearer <toke
 | GET | `/calendar/connect` | Returns Google OAuth consent URL |
 | GET | `/calendar/oauth2callback` | OAuth2 redirect handler (set as redirect URI in Google Console) |
 
-**Interactive docs:** `http://localhost:8000/docs` (Swagger UI)
+**Interactive docs:** `/docs` (Swagger UI) — locally at `http://localhost:8000/docs`, or on your deployed URL.
 
 ---
 
-## LLM Prompts
+## LLM Prompts (Google Gemini)
 
 ### Pre-visit (symptom summary)
 ```
@@ -199,7 +206,9 @@ language a non-medical person can understand. Clinical notes:
 <clinical_notes>. Prescription: <prescription_text>
 ```
 
-Both prompts have graceful fallbacks — if the LLM call fails for any reason, the system continues with a templated stub and flags it as non-AI-generated. The appointment is never blocked by LLM failure.
+Both prompts have graceful fallbacks — if the Gemini API call fails for any reason (rate limit, timeout, malformed response), the system continues with a templated stub and flags it as non-AI-generated (`ai_generated: false`). The appointment flow is never blocked by LLM failure.
+
+Gemini's free tier is rate-limited (roughly 15 requests/minute, 1,500/day on `gemini-flash-latest` as of writing — check [Google's current limits](https://ai.google.dev/gemini-api/docs/rate-limits) as these change). The fallback stub design means hitting these limits degrades gracefully rather than breaking bookings.
 
 ---
 
@@ -210,8 +219,8 @@ Both prompts have graceful fallbacks — if the LLM call fails for any reason, t
 3. Enable **Google Calendar API**
 4. Go to **Credentials → Create Credentials → OAuth 2.0 Client ID**
 5. Application type: **Web application**
-6. Add Authorized redirect URI: `http://localhost:8000/calendar/oauth2callback`  
-   (for production: `https://your-domain.com/calendar/oauth2callback`)
+6. Add Authorized redirect URI: `http://localhost:8000/calendar/oauth2callback`
+   (for production: `https://<your-render-url>.onrender.com/calendar/oauth2callback`)
 7. Download credentials and copy **Client ID** and **Client Secret** to `.env`
 8. On the **OAuth consent screen**, add your test users (or publish the app)
 
@@ -219,16 +228,47 @@ Users connect their calendar from their portal (patient or doctor) via the "Conn
 
 ---
 
-## Deployment (Render.com — free tier)
+## Deployment (Render.com free tier + Neon Postgres)
 
-1. Push the project to GitHub
-2. Create a new **Web Service** on [Render](https://render.com)
-3. Build command: `pip install -r requirements.txt && python seed_admin.py`
-4. Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-5. Add all environment variables from `.env` in the Render dashboard
-6. For persistent data, add a **PostgreSQL** database on Render and set `DATABASE_URL`
+Render's own free PostgreSQL expires 30 days after creation. **Neon's free Postgres tier has no expiration**, so this project pairs Render (compute) with Neon (database) for a fully free, persistent setup.
 
-**Railway** and **Fly.io** work identically — same build/start commands.
+1. **Database:** Create a free project at [neon.tech](https://neon.tech) → copy the connection string it gives you
+2. **Push to GitHub** — make sure `.env` and `app.db` are gitignored
+3. **Python version pin:** add a `.python-version` file to the repo root containing:
+   ```
+   3.11.9
+   ```
+   (Render's default Python version can be too new for some pinned dependencies like `pydantic-core`, which lack prebuilt wheels for the latest Python — pinning avoids a source-compile failure during build.)
+4. **Create a Web Service** on [Render](https://render.com), connected to your GitHub repo
+5. **Build command:**
+   ```
+   pip install -r requirements.txt && python seed_admin.py
+   ```
+6. **Start command:**
+   ```
+   uvicorn app.main:app --host 0.0.0.0 --port $PORT
+   ```
+7. **Environment variables** (set in Render's dashboard, not committed to the repo):
+
+   | Key | Value |
+   |---|---|
+   | `DATABASE_URL` | your Neon connection string |
+   | `JWT_SECRET` | long random string |
+   | `JWT_EXPIRE_MINUTES` | `1440` |
+   | `GEMINI_API_KEY` | your Gemini key |
+   | `LLM_MODEL` | `gemini-flash-latest` |
+   | `SENDGRID_API_KEY` | blank for mock mode, or your key |
+   | `EMAIL_FROM` | `no-reply@yourdomain.com` |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | if using Calendar |
+   | `GOOGLE_REDIRECT_URI` | `<your-render-url>/calendar/oauth2callback` |
+   | `APP_BASE_URL` | `<your-render-url>` |
+   | `PYTHON_VERSION` | `3.11.9` (backup to the `.python-version` file) |
+
+8. Deploy, then visit `/docs` to confirm the API is live, and `/static/index.html` for the frontend
+
+**Free tier behavior:** the service spins down after 15 minutes of inactivity; the first request afterward takes ~30–60 seconds (cold start) while it spins back up. This is expected, not a bug.
+
+**Railway** and **Koyeb** work with the same build/start commands as alternatives if needed. **Fly.io** no longer offers a free tier for new signups, and **PythonAnywhere**'s free tier doesn't support ASGI apps like FastAPI.
 
 ---
 
@@ -238,15 +278,15 @@ Users connect their calendar from their portal (patient or doctor) via the "Conn
 healthcare-appointment-manager/
 ├── app/
 │   ├── main.py              ← FastAPI app, router registration, scheduler startup
-│   ├── config.py            ← All settings from environment variables
+│   ├── config.py            ← All settings from environment variables (Settings class)
 │   ├── database.py          ← SQLAlchemy engine + session
-│   ├── auth.py              ← JWT, password hashing, role dependencies
+│   ├── auth.py               ← JWT, password hashing, role dependencies
 │   ├── models/models.py     ← All DB models
 │   ├── schemas/             ← Pydantic request/response schemas
 │   ├── routers/             ← auth, admin, patient, doctor, calendar
 │   ├── services/
 │   │   ├── booking_service.py   ← Slot availability + concurrency-safe booking
-│   │   ├── llm_service.py       ← Pre/post-visit summaries with fallback
+│   │   ├── llm_service.py       ← Pre/post-visit summaries via Gemini, with fallback
 │   │   ├── email_service.py     ← SendGrid + retry-friendly notification log
 │   │   ├── calendar_service.py  ← Google Calendar CRUD
 │   │   └── scheduler.py         ← APScheduler background jobs
@@ -255,10 +295,20 @@ healthcare-appointment-manager/
 │   ├── index.html           ← Login / register
 │   ├── patient.html         ← Patient portal
 │   ├── doctor.html          ← Doctor portal
-│   ├── admin.html           ← Admin portal
-│   └── style.css
+│   ├── admin.html           ← Admin portal (create doctors, mark leave)
+│   └── style.css            ← Shared styles, incl. per-role page background tints
 ├── seed_admin.py            ← One-time admin account seeder
+├── seed_demo_data.py        ← Seeds demo doctors, patients, sample appointments
 ├── run.py                   ← Dev server entrypoint
 ├── requirements.txt
+├── .python-version          ← Pins Python 3.11.9 for Render
 └── .env.example
 ```
+
+---
+
+## Security Notes
+
+- Never commit `.env`, real API keys, or database credentials to the repository — `.gitignore` should exclude `.env` and `app.db`
+- The seeded default admin password (`admin123`) must be changed immediately after first login on any deployed instance, since it's publicly documented
+- If a real API key is ever accidentally exposed (chat, commit history, screenshot), rotate it immediately at the provider (Google AI Studio for Gemini, SendGrid dashboard, Google Cloud Console for OAuth secrets) — assume it's compromised the moment it's exposed, regardless of where
