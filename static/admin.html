@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Portal – HealthBook</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    body.page-admin { background: #fbf3e7; }
+  </style>
+</head>
+<body class="page-admin">
+<header class="topbar">
+  <h1>🏥 HealthBook</h1>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span class="role-badge">Admin</span>
+    <button class="secondary" style="color:#a11b1b;border-color:#bc3939;padding:6px 12px;font-size:13px" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<main>
+  <div class="tab-nav">
+    <button class="active" onclick="showTab('doctors')">Doctors</button>
+    <button onclick="showTab('add-doctor')">Add Doctor</button>
+    <button onclick="showTab('leave')">Mark Leave</button>
+  </div>
+
+  <!-- DOCTOR LIST -->
+  <div id="tab-doctors" class="tab-panel active">
+    <div class="card">
+      <h2>All Doctors</h2>
+      <div id="doctor-list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+
+  <!-- ADD DOCTOR -->
+  <div id="tab-add-doctor" class="tab-panel">
+    <div class="card">
+      <h2>Create Doctor Account</h2>
+      <div id="add-error" class="error-box" style="display:none"></div>
+      <div id="add-success" class="success-box" style="display:none"></div>
+      <label>Full Name</label>
+      <input type="text" id="d-name" placeholder="Dr. Sarah Khan" />
+      <label>Email</label>
+      <input type="email" id="d-email" />
+      <label>Password</label>
+      <input type="password" id="d-password" />
+      <label>Specialisation</label>
+      <input type="text" id="d-spec" placeholder="e.g. Cardiology" />
+      <label>Slot duration (minutes)</label>
+      <input type="number" id="d-slot" value="30" min="10" />
+      <label>Working days & hours</label>
+      <p class="muted" style="margin-top:-8px">Select which days the doctor works and set hours for each.</p>
+      <!-- Rows are rendered by renderWorkingHoursBuilder() in JS below, not inline here -->
+      <div id="working-hours-builder"></div>
+      <button style="margin-top:12px" onclick="createDoctor()">Create Doctor</button>
+    </div>
+  </div>
+
+  <!-- MARK LEAVE -->
+  <div id="tab-leave" class="tab-panel">
+    <div class="card">
+      <h2>Mark Doctor Leave</h2>
+      <div id="leave-error" class="error-box" style="display:none"></div>
+      <div id="leave-success" class="success-box" style="display:none"></div>
+      <label>Doctor</label>
+      <select id="leave-doctor"></select>
+      <label>Leave Date</label>
+      <input type="date" id="leave-date" />
+      <label>Reason (optional)</label>
+      <input type="text" id="leave-reason" placeholder="Personal / conference / sick" />
+      <button onclick="markLeave()">Mark Leave & Notify Patients</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = '';
+let token = localStorage.getItem('token');
+if (!token) window.location.href = '/static/index.html';
+
+let doctorList = [];
+
+function authHeaders() { return {'Content-Type':'application/json','Authorization':'Bearer '+token}; }
+function logout() { localStorage.clear(); window.location.href='/static/index.html'; }
+
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+  if (name==='doctors') loadDoctors();
+}
+
+// Builds the working-hours checkbox/time rows dynamically. This MUST run in
+// JS (not as inline HTML) because it needs real DOM elements with matching
+// ids for createDoctor() to read from — a template literal placed directly
+// in the HTML body is rendered as literal text by the browser, not executed.
+function renderWorkingHoursBuilder() {
+  const days = ['mon','tue','wed','thu','fri','sat','sun'];
+  const defaultOn = ['mon','tue','wed','thu','fri'];
+  const html = days.map(d => `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <input type="checkbox" id="wh-${d}" ${defaultOn.includes(d) ? 'checked' : ''} style="width:auto;margin:0" />
+      <label for="wh-${d}" style="margin:0;font-weight:500;min-width:35px">${d.charAt(0).toUpperCase()+d.slice(1)}</label>
+      <input type="time" id="wh-${d}-start" value="09:00" style="width:100px;margin:0" />
+      <span class="muted">to</span>
+      <input type="time" id="wh-${d}-end" value="17:00" style="width:100px;margin:0" />
+    </div>`).join('');
+  document.getElementById('working-hours-builder').innerHTML = html;
+}
+
+async function loadDoctors() {
+  const res = await fetch(API + '/admin/doctors', {headers: authHeaders()});
+  const data = await res.json();
+  if (!res.ok) { document.getElementById('doctor-list').innerHTML=`<div class="error-box">${data.detail}</div>`; return; }
+  doctorList = data;
+  const el = document.getElementById('doctor-list');
+  if (!data.length) { el.innerHTML='<p class="muted">No doctors yet.</p>'; return; }
+  el.innerHTML = data.map(d=>`
+    <div class="appt-row">
+      <strong>${d.full_name}</strong>
+      <span class="muted" style="margin-left:8px">${d.specialisation} · ${d.slot_duration_minutes} min slots</span>
+    </div>`).join('');
+  // Also populate leave dropdown
+  const sel = document.getElementById('leave-doctor');
+  sel.innerHTML = data.map(d=>`<option value="${d.id}">${d.full_name}</option>`).join('');
+}
+
+async function createDoctor() {
+  const days = ['mon','tue','wed','thu','fri','sat','sun'];
+  const working_hours = {};
+  days.forEach(d => {
+    const checkbox = document.getElementById('wh-'+d);
+    if (checkbox && checkbox.checked) {
+      working_hours[d] = [
+        document.getElementById('wh-'+d+'-start').value,
+        document.getElementById('wh-'+d+'-end').value
+      ];
+    }
+  });
+  const payload = {
+    full_name: document.getElementById('d-name').value.trim(),
+    email: document.getElementById('d-email').value.trim(),
+    password: document.getElementById('d-password').value,
+    specialisation: document.getElementById('d-spec').value.trim(),
+    slot_duration_minutes: parseInt(document.getElementById('d-slot').value)||30,
+    working_hours
+  };
+  const errEl = document.getElementById('add-error');
+  const okEl = document.getElementById('add-success');
+  errEl.style.display='none'; okEl.style.display='none';
+
+  const res = await fetch(API + '/admin/doctors', {
+    method:'POST', headers: authHeaders(), body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail||'Failed'; errEl.style.display='block'; return; }
+  okEl.textContent = `✅ Doctor ${data.full_name} created successfully.`;
+  okEl.style.display='block';
+}
+
+async function markLeave() {
+  const doctor_id = document.getElementById('leave-doctor').value;
+  const leave_date = document.getElementById('leave-date').value;
+  const reason = document.getElementById('leave-reason').value.trim();
+  const errEl = document.getElementById('leave-error');
+  const okEl = document.getElementById('leave-success');
+  errEl.style.display='none'; okEl.style.display='none';
+
+  if (!leave_date) { errEl.textContent='Please select a date.'; errEl.style.display='block'; return; }
+
+  const res = await fetch(`${API}/admin/doctors/${doctor_id}/leave`, {
+    method:'POST', headers: authHeaders(),
+    body: JSON.stringify({leave_date, reason: reason||null})
+  });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail||'Failed'; errEl.style.display='block'; return; }
+  okEl.textContent = `✅ Leave marked. ${data.affected_appointments_cancelled} appointment(s) cancelled and patients notified.`;
+  okEl.style.display='block';
+}
+
+loadDoctors();
+renderWorkingHoursBuilder();
+</script>
+</body>
+</html>

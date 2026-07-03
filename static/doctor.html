@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Doctor Portal – HealthBook</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>🏥 HealthBook</h1>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span class="role-badge">Doctor</span>
+    <button class="secondary" style="color:#fff;border-color:#fff;padding:6px 12px;font-size:13px" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<main>
+  <div class="tab-nav">
+    <button class="active" onclick="showTab('schedule')">My Schedule</button>
+    <button onclick="showTab('calendar')">Connect Calendar</button>
+  </div>
+
+  <!-- SCHEDULE -->
+  <div id="tab-schedule" class="tab-panel active">
+    <div class="card">
+      <h2>Upcoming Appointments</h2>
+      <div id="schedule-list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+
+  <!-- CALENDAR -->
+  <div id="tab-calendar" class="tab-panel">
+    <div class="card">
+      <h2>Connect Google Calendar</h2>
+      <p class="muted">Patient appointments will be added to your calendar automatically once connected.</p>
+      <button onclick="connectCalendar()">Connect Google Calendar</button>
+      <div id="cal-msg"></div>
+    </div>
+  </div>
+</main>
+
+<!-- POST-VISIT NOTES MODAL -->
+<div id="post-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;padding:24px;width:540px;max-width:95vw;max-height:90vh;overflow-y:auto">
+    <h2 style="margin-top:0;color:#0f3d3e">Submit Post-Visit Notes</h2>
+    <label>Clinical Notes</label>
+    <textarea id="post-notes" rows="5" placeholder="Patient presented with… diagnosis… treatment plan…"></textarea>
+
+    <h3 style="font-size:14px;margin-bottom:8px">Prescription</h3>
+    <div id="prescription-rows"></div>
+    <button class="secondary" style="margin-bottom:14px" onclick="addPrescriptionRow()">+ Add Medication</button>
+
+    <div id="post-error" class="error-box" style="display:none"></div>
+    <div id="post-success" class="success-box" style="display:none"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="submitPostVisit()">Submit & Generate Summary</button>
+      <button class="secondary" onclick="closePostModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('token');
+if (!token) window.location.href = '/static/index.html';
+
+let activeApptId = null;
+
+function authHeaders() { return {'Content-Type':'application/json','Authorization':'Bearer '+token}; }
+function logout() { localStorage.clear(); window.location.href='/static/index.html'; }
+
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+async function loadSchedule() {
+  const res = await fetch(API + '/doctor/appointments', {headers: authHeaders()});
+  const appts = await res.json();
+  const el = document.getElementById('schedule-list');
+  if (!Array.isArray(appts) || !appts.length) {
+    el.innerHTML = '<p class="muted">No appointments yet.</p>'; return;
+  }
+  el.innerHTML = appts.map(a => {
+    const preJson = a.pre_visit_summary_json ? JSON.parse(a.pre_visit_summary_json) : null;
+    return `
+    <div class="appt-row">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <div>
+          <strong>${new Date(a.slot_start).toLocaleString()}</strong>
+          <span class="badge status-${a.status}" style="margin-left:8px">${a.status}</span>
+          ${preJson ? `<span class="badge urgency-${(preJson.urgency_level||'medium').toLowerCase()}" style="margin-left:4px">Urgency: ${preJson.urgency_level}</span>` : ''}
+        </div>
+        ${a.status==='booked' ? `<button onclick="openPostModal('${a.id}')" style="font-size:12px;padding:5px 12px">Complete Visit</button>` : ''}
+      </div>
+      ${preJson ? `
+        <div style="margin-top:10px;background:#e3f0ef;border-radius:6px;padding:12px">
+          <div style="font-size:12px;font-weight:600;color:#0f3d3e;margin-bottom:6px">PRE-VISIT SUMMARY (AI)</div>
+          <div style="font-size:13px"><strong>Chief complaint:</strong> ${preJson.chief_complaint||'—'}</div>
+          <div style="font-size:13px;margin-top:4px"><strong>Suggested questions:</strong></div>
+          <ul style="font-size:13px;margin:4px 0 0 16px;padding:0">
+            ${(preJson.suggested_questions||[]).map(q=>`<li>${q}</li>`).join('')}
+          </ul>
+          ${preJson.ai_generated===false ? '<div style="font-size:11px;color:#6b6760;margin-top:4px">⚠ AI unavailable – showing basic summary</div>' : ''}
+        </div>` : a.status==='booked' ? '<p class="muted" style="font-size:13px;margin-top:6px">Patient has not submitted symptoms yet.</p>' : ''}
+      ${a.post_visit_summary_text ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:13px">Post-visit summary</summary><p style="font-size:13px;white-space:pre-wrap">${a.post_visit_summary_text}</p></details>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function openPostModal(apptId) {
+  activeApptId = apptId;
+  document.getElementById('post-notes').value = '';
+  document.getElementById('prescription-rows').innerHTML = '';
+  document.getElementById('post-error').style.display='none';
+  document.getElementById('post-success').style.display='none';
+  document.getElementById('post-modal').style.display='flex';
+}
+function closePostModal() { document.getElementById('post-modal').style.display='none'; }
+
+function addPrescriptionRow() {
+  const div = document.createElement('div');
+  div.style.cssText = 'border:1px solid #e1ddd4;border-radius:6px;padding:12px;margin-bottom:10px;position:relative';
+  div.innerHTML = `
+    <button onclick="this.parentElement.remove()" style="position:absolute;top:8px;right:8px;background:#c0392b;padding:2px 8px;font-size:12px">✕</button>
+    <label>Drug name</label><input type="text" class="p-drug" placeholder="e.g. Amoxicillin" />
+    <label>Dose</label><input type="text" class="p-dose" placeholder="e.g. 500mg" />
+    <label>Times per day</label><input type="number" class="p-freq" value="3" min="1" max="6" />
+    <label>Duration (days)</label><input type="number" class="p-dur" value="7" min="1" />
+  `;
+  document.getElementById('prescription-rows').appendChild(div);
+}
+
+async function submitPostVisit() {
+  const clinical_notes = document.getElementById('post-notes').value.trim();
+  const errEl = document.getElementById('post-error');
+  const okEl = document.getElementById('post-success');
+  errEl.style.display='none'; okEl.style.display='none';
+
+  if (!clinical_notes) { errEl.textContent='Please enter clinical notes.'; errEl.style.display='block'; return; }
+
+  const rows = document.getElementById('prescription-rows').querySelectorAll('div');
+  const prescription = Array.from(rows).map(row => ({
+    drug: row.querySelector('.p-drug').value.trim(),
+    dose: row.querySelector('.p-dose').value.trim(),
+    frequency_per_day: parseInt(row.querySelector('.p-freq').value)||1,
+    duration_days: parseInt(row.querySelector('.p-dur').value)||7,
+  })).filter(p => p.drug);
+
+  const res = await fetch(`${API}/doctor/appointments/${activeApptId}/post-visit`, {
+    method:'POST', headers: authHeaders(),
+    body: JSON.stringify({clinical_notes, prescription})
+  });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail||'Failed'; errEl.style.display='block'; return; }
+
+  okEl.textContent = '✅ Notes submitted. Patient summary sent by email.';
+  okEl.style.display='block';
+  setTimeout(() => { closePostModal(); loadSchedule(); }, 2000);
+}
+
+async function connectCalendar() {
+  const res = await fetch(API + '/calendar/connect', {headers: authHeaders()});
+  const data = await res.json();
+  const el = document.getElementById('cal-msg');
+  if (!res.ok) { el.innerHTML = `<div class="error-box" style="margin-top:12px">${data.detail}</div>`; return; }
+  window.location.href = data.auth_url;
+}
+
+loadSchedule();
+</script>
+</body>
+</html>

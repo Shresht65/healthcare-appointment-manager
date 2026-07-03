@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Patient Portal – HealthBook</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>🏥 HealthBook</h1>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span class="role-badge">Patient</span>
+    <button class="secondary" style="color:#fff;border-color:#fff;padding:6px 12px;font-size:13px" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<main>
+  <div class="tab-nav">
+    <button class="active" onclick="showTab('book')">Book Appointment</button>
+    <button onclick="showTab('my-appts')">My Appointments</button>
+    <button onclick="showTab('calendar')">Connect Calendar</button>
+  </div>
+
+  <!-- BOOK APPOINTMENT -->
+  <div id="tab-book" class="tab-panel active">
+    <div class="card">
+      <h2>Find a Doctor</h2>
+      <label>Specialisation (optional)</label>
+      <input type="text" id="search-spec" placeholder="e.g. Cardiology" />
+      <button onclick="searchDoctors()">Search</button>
+    </div>
+    <div id="doctor-list"></div>
+  </div>
+
+  <!-- MY APPOINTMENTS -->
+  <div id="tab-my-appts" class="tab-panel">
+    <div class="card">
+      <h2>My Appointments</h2>
+      <div id="my-appts-list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+
+  <!-- CONNECT CALENDAR -->
+  <div id="tab-calendar" class="tab-panel">
+    <div class="card">
+      <h2>Connect Google Calendar</h2>
+      <p class="muted">Connect your Google account so appointments appear in your calendar automatically.</p>
+      <button onclick="connectCalendar()">Connect Google Calendar</button>
+      <div id="cal-msg"></div>
+    </div>
+  </div>
+</main>
+
+<!-- SLOT BOOKING MODAL -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;padding:24px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto">
+    <h2 id="modal-title" style="margin-top:0;color:#0f3d3e"></h2>
+    <label>Select Date</label>
+    <input type="date" id="slot-date" onchange="loadSlots()" />
+    <div id="slot-list" style="margin:12px 0"></div>
+
+    <div id="symptom-section" style="display:none">
+      <label>Describe your symptoms <span class="muted">(optional but recommended)</span></label>
+      <textarea id="symptom-text" rows="4" placeholder="e.g. Headache for 3 days, fever 38°C, no cough…"></textarea>
+    </div>
+
+    <div id="modal-error" class="error-box" style="display:none"></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button onclick="confirmBooking()">Confirm Booking</button>
+      <button class="secondary" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- SYMPTOM MODAL (post-booking, for existing appts) -->
+<div id="symptom-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;padding:24px;width:480px;max-width:95vw">
+    <h2 style="margin-top:0;color:#0f3d3e">Submit Symptoms</h2>
+    <label>Describe your symptoms</label>
+    <textarea id="sym-text" rows="5"></textarea>
+    <div id="sym-error" class="error-box" style="display:none"></div>
+    <div id="sym-success" class="success-box" style="display:none"></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button onclick="submitSymptoms()">Submit</button>
+      <button class="secondary" onclick="closeSymModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('token');
+if (!token) window.location.href = '/static/index.html';
+
+let selectedDoctorId = null;
+let selectedDoctorName = null;
+let selectedSlot = null;
+let activeApptId = null;
+
+function authHeaders() { return {'Content-Type':'application/json','Authorization':'Bearer '+token}; }
+function logout() { localStorage.clear(); window.location.href='/static/index.html'; }
+
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'my-appts') loadMyAppointments();
+}
+
+async function searchDoctors() {
+  const spec = document.getElementById('search-spec').value.trim();
+  const url = API + '/patient/doctors' + (spec ? '?specialisation='+encodeURIComponent(spec) : '');
+  const res = await fetch(url, {headers: authHeaders()});
+  const doctors = await res.json();
+  const el = document.getElementById('doctor-list');
+  if (!doctors.length) { el.innerHTML='<p class="muted">No doctors found.</p>'; return; }
+  el.innerHTML = doctors.map(d => `
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <strong>${d.full_name}</strong>
+        <div class="muted">${d.specialisation} · ${d.slot_duration_minutes} min slots</div>
+      </div>
+      <button onclick="openBookModal('${d.id}','${d.full_name.replace(/'/g,"\\'")}')">Book</button>
+    </div>`).join('');
+}
+
+function openBookModal(doctorId, doctorName) {
+  selectedDoctorId = doctorId;
+  selectedDoctorName = doctorName;
+  selectedSlot = null;
+  document.getElementById('modal-title').textContent = 'Book with ' + doctorName;
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('slot-date').value = today;
+  document.getElementById('slot-list').innerHTML = '';
+  document.getElementById('symptom-section').style.display = 'none';
+  document.getElementById('modal-error').style.display = 'none';
+  document.getElementById('modal-overlay').style.display = 'flex';
+  loadSlots();
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
+}
+
+async function loadSlots() {
+  const day = document.getElementById('slot-date').value;
+  if (!day) return;
+  document.getElementById('slot-list').innerHTML = '<p class="muted">Loading slots…</p>';
+  const res = await fetch(`${API}/patient/doctors/${selectedDoctorId}/slots?day=${day}`, {headers: authHeaders()});
+  const data = await res.json();
+  if (!data.available_slots || !data.available_slots.length) {
+    document.getElementById('slot-list').innerHTML = '<p class="muted">No slots available on this date.</p>';
+    return;
+  }
+  document.getElementById('slot-list').innerHTML = `
+    <label>Available slots</label>
+    <div class="slot-grid">
+      ${data.available_slots.map(s => {
+        const t = new Date(s).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        return `<button class="slot-btn" onclick="selectSlot(this,'${s}')">${t}</button>`;
+      }).join('')}
+    </div>`;
+}
+
+function selectSlot(btn, slotIso) {
+  document.querySelectorAll('.slot-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  selectedSlot = slotIso;
+  document.getElementById('symptom-section').style.display = 'block';
+}
+
+async function confirmBooking() {
+  if (!selectedSlot) {
+    document.getElementById('modal-error').textContent='Please select a time slot.';
+    document.getElementById('modal-error').style.display='block';
+    return;
+  }
+  const errEl = document.getElementById('modal-error');
+  errEl.style.display = 'none';
+
+  const res = await fetch(API + '/patient/appointments/book', {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({doctor_id: selectedDoctorId, slot_start: selectedSlot})
+  });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail || 'Booking failed'; errEl.style.display='block'; return; }
+
+  // Submit symptoms if entered
+  const symptoms = document.getElementById('symptom-text').value.trim();
+  if (symptoms) {
+    await fetch(`${API}/patient/appointments/${data.id}/symptoms`, {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({symptoms_text: symptoms})
+    });
+  }
+  closeModal();
+  alert('✅ Appointment booked! A confirmation email has been sent.');
+}
+
+async function loadMyAppointments() {
+  const res = await fetch(API + '/patient/appointments', {headers: authHeaders()});
+  const appts = await res.json();
+  const el = document.getElementById('my-appts-list');
+  if (!appts.length) { el.innerHTML='<p class="muted">No appointments yet.</p>'; return; }
+  el.innerHTML = appts.map(a => `
+    <div class="appt-row">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <strong>${new Date(a.slot_start).toLocaleString()}</strong>
+          <span class="badge status-${a.status}" style="margin-left:8px">${a.status}</span>
+          ${a.urgency_level ? `<span class="badge urgency-${a.urgency_level.toLowerCase()}" style="margin-left:4px">Urgency: ${a.urgency_level}</span>` : ''}
+        </div>
+        ${a.status==='booked' ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openSymModal('${a.id}')">Add Symptoms</button>` : ''}
+      </div>
+      ${a.post_visit_summary_text ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Post-visit summary</summary><p style="font-size:13px;white-space:pre-wrap">${a.post_visit_summary_text}</p></details>` : ''}
+    </div>`).join('');
+}
+
+function openSymModal(apptId) {
+  activeApptId = apptId;
+  document.getElementById('sym-text').value = '';
+  document.getElementById('sym-error').style.display='none';
+  document.getElementById('sym-success').style.display='none';
+  document.getElementById('symptom-modal').style.display='flex';
+}
+function closeSymModal() { document.getElementById('symptom-modal').style.display='none'; }
+
+async function submitSymptoms() {
+  const symptoms_text = document.getElementById('sym-text').value.trim();
+  const errEl = document.getElementById('sym-error');
+  const okEl = document.getElementById('sym-success');
+  errEl.style.display='none'; okEl.style.display='none';
+  if (!symptoms_text) { errEl.textContent='Please describe your symptoms.'; errEl.style.display='block'; return; }
+  const res = await fetch(`${API}/patient/appointments/${activeApptId}/symptoms`, {
+    method:'POST', headers: authHeaders(),
+    body: JSON.stringify({symptoms_text})
+  });
+  const data = await res.json();
+  if (!res.ok) { errEl.textContent = data.detail||'Failed'; errEl.style.display='block'; return; }
+  okEl.textContent = `✅ Symptoms submitted. Urgency: ${data.urgency_level||'assessed'}`;
+  okEl.style.display='block';
+  loadMyAppointments();
+}
+
+async function connectCalendar() {
+  const res = await fetch(API + '/calendar/connect', {headers: authHeaders()});
+  const data = await res.json();
+  const el = document.getElementById('cal-msg');
+  if (!res.ok) { el.innerHTML = `<div class="error-box" style="margin-top:12px">${data.detail}</div>`; return; }
+  window.location.href = data.auth_url;
+}
+
+// Auto-search all doctors on load
+searchDoctors();
+</script>
+</body>
+</html>

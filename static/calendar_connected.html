@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Calendar Connected – HealthBook</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="center-page">
+  <div class="auth-box" style="text-align:center">
+    <div style="font-size:48px;margin-bottom:12px">📅</div>
+    <h1>Calendar Connected!</h1>
+    <p class="subtitle">Your Google Calendar is now linked. Future appointments will appear there automatically.</p>
+    <button onclick="goBack()" style="margin-top:8px">Back to Portal</button>
+  </div>
+</div>
+<script>
+function goBack() {
+  const role = localStorage.getItem('role');
+  if (role === 'doctor') window.location.href = '/static/doctor.html';
+  else window.location.href = '/static/patient.html';
+}
+</script>
+</body>
+</html>

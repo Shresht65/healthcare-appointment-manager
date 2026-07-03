@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Healthcare Appointment Manager</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="center-page">
+  <div class="auth-box">
+    <h1>🏥 HealthBook</h1>
+    <p class="subtitle">Appointment & Follow-up Manager</p>
+
+    <div class="tab-nav" style="margin-bottom:20px;">
+      <button class="active" onclick="switchTab('login')">Login</button>
+      <button onclick="switchTab('register')">Register</button>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="tab-login" class="tab-panel active">
+      <div id="login-error" class="error-box" style="display:none"></div>
+      <label>Email</label>
+      <input type="email" id="login-email" placeholder="you@example.com" />
+      <label>Password</label>
+      <input type="password" id="login-password" placeholder="••••••••" />
+      <button style="width:100%" onclick="doLogin()">Login</button>
+    </div>
+
+    <!-- REGISTER (patients only) -->
+    <div id="tab-register" class="tab-panel">
+      <div id="reg-error" class="error-box" style="display:none"></div>
+      <div id="reg-success" class="success-box" style="display:none"></div>
+      <label>Full Name</label>
+      <input type="text" id="reg-name" placeholder="Jane Smith" />
+      <label>Email</label>
+      <input type="email" id="reg-email" placeholder="you@example.com" />
+      <label>Password</label>
+      <input type="password" id="reg-password" placeholder="••••••••" />
+      <button style="width:100%" onclick="doRegister()">Create patient account</button>
+      <p class="muted" style="text-align:center;margin-top:12px">
+        Doctor accounts are created by the admin.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  event.target.classList.add('active');
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+
+  try {
+    const res = await fetch(API + '/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email, password})
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.detail || 'Login failed'; errEl.style.display='block'; return; }
+
+    localStorage.setItem('token', data.access_token);
+    localStorage.setItem('role', data.role);
+    localStorage.setItem('user_id', data.user_id);
+
+    if (data.role === 'admin') window.location.href = '/static/admin.html';
+    else if (data.role === 'doctor') window.location.href = '/static/doctor.html';
+    else window.location.href = '/static/patient.html';
+  } catch(e) {
+    errEl.textContent = 'Network error'; errEl.style.display='block';
+  }
+}
+
+async function doRegister() {
+  const full_name = document.getElementById('reg-name').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const password = document.getElementById('reg-password').value;
+  const errEl = document.getElementById('reg-error');
+  const okEl = document.getElementById('reg-success');
+  errEl.style.display='none'; okEl.style.display='none';
+
+  try {
+    const res = await fetch(API + '/auth/register', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({full_name, email, password, role: 'patient'})
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.detail || 'Registration failed'; errEl.style.display='block'; return; }
+
+    localStorage.setItem('token', data.access_token);
+    localStorage.setItem('role', data.role);
+    localStorage.setItem('user_id', data.user_id);
+    window.location.href = '/static/patient.html';
+  } catch(e) {
+    errEl.textContent = 'Network error'; errEl.style.display='block';
+  }
+}
+
+// If already logged in, redirect
+const existingToken = localStorage.getItem('token');
+const existingRole = localStorage.getItem('role');
+if (existingToken && existingRole) {
+  if (existingRole === 'admin') window.location.href = '/static/admin.html';
+  else if (existingRole === 'doctor') window.location.href = '/static/doctor.html';
+  else window.location.href = '/static/patient.html';
+}
+</script>
+</body>
+</html>
